@@ -1,0 +1,8 @@
+Boss1 Path: Music/Boss1/Chorus – Female Vocal (English) 🔥 KILLI.mp3
+Boss1 Duration: 152.680
+Boss1 Calculated BPM: 89.95 (Interval: 0.667s)
+
+Boss2 Path: Music/Boss2/Second Run (Dreaming in the Ether).mp3
+Boss2 Duration: 189.840
+Boss2 Calculated BPM: 127.11 (Interval: 0.944s)
+
