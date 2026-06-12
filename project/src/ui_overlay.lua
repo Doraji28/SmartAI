@@ -23,13 +23,16 @@ end
 function ui_overlay.trigger_rating(rating)
     ui_overlay.rating_text = rating
     ui_overlay.rating_timer = 0.65 -- Show for 0.65 seconds
-    ui_overlay.rating_scale = 1.5
+    ui_overlay.rating_scale = 1.6
     
     if rating == "PERFECT" then
-        ui_overlay.rating_color = {1.0, 0.85, 0.1, 1.0} -- Glowing gold
-    elseif rating == "COOL" then
+        ui_overlay.rating_color = {1.0, 0.85, 0.1, 1.0} -- Glowing gold/yellow
+    elseif rating == "GOOD" then
         ui_overlay.rating_color = {0.2, 0.85, 0.95, 1.0} -- Glowing cyan
+    elseif rating == "BAD" then
+        ui_overlay.rating_color = {0.85, 0.2, 0.85, 1.0} -- Purple
     else
+        ui_overlay.rating_text = "MISS"
         ui_overlay.rating_color = {0.95, 0.2, 0.2, 1.0} -- Red
     end
 end
@@ -79,68 +82,13 @@ function ui_overlay.draw_hud(player_hp, gun_heat, is_overheated, boss_hp, boss_s
     love.graphics.line(cx, cy + spoke_start, cx, cy + spoke_start + spoke_len)
     
     -----------------------------------------------------
-    -- 2. CONTRACTING NOTE TIMING RING (RHYTHM HELPER)
+    -- 2. CURSOR PULSE RETICLE
     -----------------------------------------------------
-    local note_mod = require("note")
-    local closest_note = nil
-    local min_beat_diff = 999
-    
-    for _, n in ipairs(note_mod.active_notes) do
-        if n.type == "breakable" or (n.type == "laser" and not n.is_holding) then
-            local diff = n.target_beat - beat_manager.current_beat
-            if diff > -0.3 and diff < 1.5 then
-                if math.abs(diff) < math.abs(min_beat_diff) then
-                    min_beat_diff = diff
-                    closest_note = n
-                end
-            end
-        end
-    end
-    
-    if closest_note then
-        local time_offset = min_beat_diff * beat_manager.beat_interval
-        
-        if time_offset > 0 then
-            -- Note is approaching. Circle contracts from 80 to 26.
-            -- Starts contracting from 0.45 beats away (prevents overlaps on fast 0.5-beat notes)
-            local progress = math.min(1.0, min_beat_diff / 0.45)
-            local ring_r = 26 + 54 * progress
-            local ring_alpha = 0.25 + 0.65 * (1.0 - progress)
-            
-            -- Color feedback based on timing window
-            local ring_color = {0.2, 0.95, 0.3, ring_alpha} -- Green (incoming)
-            if time_offset <= 0.22 then
-                ring_color = {0.2, 0.85, 0.95, 0.9} -- Cyan (Cool range!)
-                if time_offset <= 0.08 then
-                    ring_color = {1.0, 0.85, 0.1, 0.95} -- Gold (Perfect range!)
-                end
-            end
-            
-            love.graphics.setColor(ring_color)
-            love.graphics.setLineWidth(2.5)
-            love.graphics.circle("line", cx, cy, ring_r)
-            
-            -- Draw a faint outer guide ring at target radius 26
-            love.graphics.setColor(ring_color[1], ring_color[2], ring_color[3], 0.2)
-            love.graphics.setLineWidth(1)
-            love.graphics.circle("line", cx, cy, 26)
-        else
-            -- Note is slightly past (late hit window)
-            local progress_late = math.min(1.0, math.abs(time_offset) / 0.22)
-            local ring_alpha = 0.8 * (1.0 - progress_late)
-            
-            -- Red alert for late clicks
-            love.graphics.setColor(0.95, 0.2, 0.2, ring_alpha)
-            love.graphics.setLineWidth(2.5)
-            love.graphics.circle("line", cx, cy, 26)
-        end
-    else
-        -- Idle state: draw a very faint, pulsing heartbeat circle around crosshair (pulsing faster)
-        local pulse = 26 + 6 * (0.5 + 0.5 * math.sin(time * 12))
-        love.graphics.setColor(0.2, 0.95, 0.3, 0.18)
-        love.graphics.setLineWidth(1)
-        love.graphics.circle("line", cx, cy, pulse)
-    end
+    -- Idle state: draw a very faint, pulsing heartbeat circle around crosshair
+    local pulse = 26 + 6 * (0.5 + 0.5 * math.sin(time * 12))
+    love.graphics.setColor(0.2, 0.95, 0.3, 0.18)
+    love.graphics.setLineWidth(1)
+    love.graphics.circle("line", cx, cy, pulse)
 
     -----------------------------------------------------
     -- 3. GUN HEAT BAR (BELOW CROSSHAIR)
@@ -393,13 +341,94 @@ function ui_overlay.draw_screen_state(state, score, max_combo)
 end
 
 -- Renders the futuristic 2D Stage Selection Menu
+-- Selection and scroll states for the menu
+ui_overlay.selected_idx = 1
+ui_overlay.scroll_y = 0.0
+ui_overlay.target_scroll_y = -120.0
+
+-- Select active stage (updates preview soundtrack loop)
+function ui_overlay.select_stage(idx)
+    local max_idx = #beat_manager.stages
+    if idx < 1 then idx = 1 end
+    if idx > max_idx then idx = max_idx end
+    
+    if ui_overlay.selected_idx ~= idx then
+        local sound_synth = require("sound_synth")
+        ui_overlay.selected_idx = idx
+        
+        -- Stop current loop, select track and restart preview
+        sound_synth.music_loop:stop()
+        sound_synth.select_track(idx)
+        sound_synth.music_loop:seek(0)
+        sound_synth.music_loop:play()
+    end
+    
+    -- Recalculate target scroll to center the selected card
+    local card_step = 90
+    ui_overlay.target_scroll_y = (idx - 1) * card_step - 220
+end
+
+function ui_overlay.select_next()
+    ui_overlay.select_stage(ui_overlay.selected_idx + 1)
+end
+
+function ui_overlay.select_prev()
+    ui_overlay.select_stage(ui_overlay.selected_idx - 1)
+end
+
+-- Scroll menu with mouse wheel
+function ui_overlay.scroll_menu(direction)
+    if direction > 0 then
+        ui_overlay.select_prev()
+    elseif direction < 0 then
+        ui_overlay.select_next()
+    end
+end
+
+-- Detect mouse hovering over cards or button
+function ui_overlay.get_hovered_card(mx, my)
+    local cards = beat_manager.stages
+    local card_step = 90
+    local card_w = 360
+    local card_h = 75
+    local start_x = 840
+    local start_y = 180
+    
+    for idx = 1, #cards do
+        local is_selected = (idx == ui_overlay.selected_idx)
+        local cx = start_x
+        if is_selected then
+            cx = start_x - 45
+        end
+        local cy = start_y + (idx - 1) * card_step - ui_overlay.scroll_y
+        
+        if mx >= cx and mx <= cx + card_w and my >= cy and my <= cy + card_h then
+            return idx
+        end
+    end
+    
+    -- Check details play button hover
+    local play_x = 100
+    local play_y = 520
+    local play_w = 360
+    local play_h = 60
+    if mx >= play_x and mx <= play_x + play_w and my >= play_y and my <= play_y + play_h then
+        return "play"
+    end
+    
+    return nil
+end
+
+-- Renders the futuristic 2D Stage Selection Menu (OSU!-style sliding list)
 function ui_overlay.draw_stage_select_menu(mx, my)
     local screen_w, screen_h = 1280, 720
     local center_x = screen_w / 2
     local time = love.timer.getTime()
+    local sound_synth = require("sound_synth")
     
     local font_title = font_manager.get_font(36)
-    local font_mid = font_manager.get_font(20)
+    local font_large = font_manager.get_font(28)
+    local font_mid = font_manager.get_font(18)
     local font_body = font_manager.get_font(14)
     local font_small = font_manager.get_font(12)
     local grid_renderer = require("grid_renderer")
@@ -407,7 +436,7 @@ function ui_overlay.draw_stage_select_menu(mx, my)
     love.graphics.push()
     
     -- Main Menu Background Overlay
-    love.graphics.setColor(0, 0, 0, 0.65)
+    love.graphics.setColor(0, 0, 0, 0.7)
     love.graphics.rectangle("fill", 0, 0, screen_w, screen_h)
     
     -- Header Title
@@ -415,115 +444,237 @@ function ui_overlay.draw_stage_select_menu(mx, my)
     love.graphics.setColor(1.0, 1.0, 1.0, 0.95)
     local title_txt = "SOULROCK"
     local title_w = font_title:getWidth(title_txt)
-    love.graphics.print(title_txt, center_x - title_w/2, 60)
+    love.graphics.print(title_txt, center_x - title_w/2, 45)
     
     -- Subtitle
     love.graphics.setFont(font_small)
     love.graphics.setColor(0.2, 0.8, 0.95, 0.8)
     local sub_txt = "SELECT TARGET ENCOUNTER & SOUNDTRACK TIMELINE"
     local sub_w = font_small:getWidth(sub_txt)
-    love.graphics.print(sub_txt, center_x - sub_w/2, 110)
+    love.graphics.print(sub_txt, center_x - sub_w/2, 95)
     
     -- Decorative scanner line
     love.graphics.setLineWidth(1)
-    love.graphics.setColor(0.15, 0.75, 0.9, 0.35)
-    love.graphics.line(center_x - 300, 130, center_x + 300, 130)
+    love.graphics.setColor(0.15, 0.75, 0.9, 0.3)
+    love.graphics.line(center_x - 300, 115, center_x + 300, 115)
     
-    -- Renders the 2 cards
+    -----------------------------------------------------
+    -- 1. LEFT SIDE - SELECTED SONG DETAILS
+    -----------------------------------------------------
     local cards = beat_manager.stages
-    local card_w = 360
-    local card_h = 420
-    local start_x = 240
-    local start_y = 180
-    local spacing = 80
+    local selected_card = cards[ui_overlay.selected_idx]
     
-    for idx, card in ipairs(cards) do
-        local cx = start_x + (idx - 1) * (card_w + spacing)
-        local cy = start_y
+    if selected_card then
+        -- Glassmorphic details panel
+        love.graphics.setColor(0.04, 0.05, 0.08, 0.85)
+        love.graphics.rectangle("fill", 40, 140, 480, 500, 16)
         
-        -- Check mouse hover
-        local is_hovered = (mx >= cx and mx <= cx + card_w and my >= cy and my <= cy + card_h)
+        local theme_col = selected_card.color
+        love.graphics.setColor(theme_col[1], theme_col[2], theme_col[3], 0.3)
+        love.graphics.setLineWidth(2)
+        love.graphics.rectangle("line", 40, 140, 480, 500, 16)
         
-        -- Hover offset animations
-        local target_y = cy
-        local scale_multiplier = 1.0
-        if is_hovered then
-            target_y = cy - 10
-            scale_multiplier = 1.05
-        end
+        -- Decorative corner glowing lines
+        love.graphics.setColor(theme_col[1], theme_col[2], theme_col[3], 0.08)
+        love.graphics.rectangle("fill", 40, 140, 480, 500, 16)
         
-        -- Glassmorphic Card Frame
-        love.graphics.setColor(0.05, 0.06, 0.1, 0.88)
-        love.graphics.rectangle("fill", cx, target_y, card_w, card_h, 12)
+        -- Large rotating Boss preview
+        local icon_cx = 40 + 240
+        local icon_cy = 140 + 130
+        local icon_scale = 2.4
+        grid_renderer.draw_boss_icon(ui_overlay.selected_idx, icon_cx, icon_cy, icon_scale, time)
         
-        -- Glowing neon borders matching stage color config
-        local col = card.color
-        local glow_alpha = is_hovered and 0.9 or 0.22
-        local line_w = is_hovered and 3 or 1.5
-        
-        love.graphics.setLineWidth(line_w)
-        love.graphics.setColor(col[1], col[2], col[3], glow_alpha)
-        love.graphics.rectangle("line", cx, target_y, card_w, card_h, 12)
-        
-        -- Additional ambient corner glow
-        if is_hovered then
-            love.graphics.setColor(col[1], col[2], col[3], 0.15 * (0.8 + 0.2 * math.sin(time * 15)))
-            love.graphics.rectangle("fill", cx, target_y, card_w, card_h, 12)
-        end
-        
-        -- 1. Draw Boss Icon
-        local icon_cx = cx + card_w / 2
-        local icon_cy = target_y + 110
-        local icon_scale = 1.5 * scale_multiplier
-        grid_renderer.draw_boss_icon(idx, icon_cx, icon_cy, icon_scale, time)
-        
-        -- 2. Stage Number
+        -- Stage Number
         love.graphics.setFont(font_small)
-        love.graphics.setColor(col[1], col[2], col[3], 0.85)
-        love.graphics.printf(string.format("STAGE 0%d", idx), cx, target_y + 210, card_w, "center")
+        love.graphics.setColor(theme_col[1], theme_col[2], theme_col[3], 0.95)
+        love.graphics.print(string.format("STAGE 0%d", ui_overlay.selected_idx), 70, 325)
         
-        -- 3. Boss Name
-        love.graphics.setFont(font_mid)
+        -- Boss Name
+        love.graphics.setFont(font_large)
         love.graphics.setColor(1, 1, 1, 0.95)
-        love.graphics.printf(card.boss_name, cx, target_y + 230, card_w, "center")
+        love.graphics.print(selected_card.boss_name, 70, 345)
         
-        -- 4. Song Name
-        love.graphics.setFont(font_body)
+        -- Song Name
+        love.graphics.setFont(font_mid)
         love.graphics.setColor(0.7, 0.8, 0.9, 0.9)
-        love.graphics.printf(card.name, cx, target_y + 270, card_w, "center")
+        love.graphics.print(selected_card.name, 70, 385)
         
-        -- 5. Audio properties (BPM / Duration)
-        love.graphics.setFont(font_small)
+        -- Metadata Properties
+        love.graphics.setFont(font_body)
         love.graphics.setColor(0.5, 0.6, 0.7, 0.85)
-        local total_seconds = math.floor(card.total_beats * (60 / card.bpm))
+        local total_seconds = math.floor(selected_card.total_beats * (60 / selected_card.bpm))
         local minutes = math.floor(total_seconds / 60)
         local seconds = total_seconds % 60
-        love.graphics.printf(string.format("TEMPO: %d BPM  |  TIME: %02d:%02d", card.bpm, minutes, seconds), cx, target_y + 300, card_w, "center")
+        love.graphics.print(string.format("TEMPO: %d BPM  |  TIME: %02d:%02d", selected_card.bpm, minutes, seconds), 70, 425)
         
-        -- 6. Difficulty Level Badge
-        love.graphics.setFont(font_small)
-        local diff_col = (card.difficulty == "HARD") and {0.95, 0.15, 0.15, 0.9} or {0.2, 0.95, 0.35, 0.9}
+        -- Difficulty Badge
+        love.graphics.print("DIFFICULTY: ", 70, 455)
+        local diff_col = (selected_card.difficulty == "HARD") and {0.95, 0.15, 0.15, 0.9} or {0.2, 0.95, 0.35, 0.9}
         love.graphics.setColor(diff_col)
-        love.graphics.printf("DIFFICULTY: " .. card.difficulty, cx, target_y + 330, card_w, "center")
+        love.graphics.print(selected_card.difficulty, 170, 455)
         
-        -- 7. Call To Action flashing text
-        if is_hovered then
+        -- Interface Launch Button
+        local play_hovered = (ui_overlay.get_hovered_card(mx, my) == "play")
+        local play_x, play_y, play_w, play_h = 100, 530, 360, 60
+        
+        love.graphics.setColor(0.06, 0.08, 0.12, 0.9)
+        love.graphics.rectangle("fill", play_x, play_y, play_w, play_h, 8)
+        
+        local btn_alpha = play_hovered and 0.95 or 0.45
+        love.graphics.setColor(theme_col[1], theme_col[2], theme_col[3], btn_alpha)
+        love.graphics.setLineWidth(play_hovered and 3 or 1.5)
+        love.graphics.rectangle("line", play_x, play_y, play_w, play_h, 8)
+        
+        if play_hovered then
+            love.graphics.setColor(theme_col[1], theme_col[2], theme_col[3], 0.12 * (0.8 + 0.2 * math.sin(time * 15)))
+            love.graphics.rectangle("fill", play_x, play_y, play_w, play_h, 8)
+        end
+        
+        love.graphics.setFont(font_mid)
+        love.graphics.setColor(1, 1, 1, play_hovered and 1.0 or 0.8)
+        love.graphics.printf(play_hovered and "-> CLICK TO INTERFACE <-" or "INTERFACE SYSTEM", play_x, play_y + 18, play_w, "center")
+    end
+    
+    -----------------------------------------------------
+    -- 2. RIGHT SIDE - OSU!-STYLE SLIDING SONG LIST
+    -----------------------------------------------------
+    local card_step = 90
+    local card_w = 360
+    local card_h = 75
+    local start_x = 840
+    local start_y = 180
+    
+    -- Draw container frame boundaries or scrollbar helper
+    for idx, card in ipairs(cards) do
+        local is_selected = (idx == ui_overlay.selected_idx)
+        local hovered_idx = ui_overlay.get_hovered_card(mx, my)
+        local is_hovered = (hovered_idx == idx)
+        
+        local cx = start_x
+        if is_selected then
+            cx = start_x - 45 -- Slide left when selected
+        elseif is_hovered then
+            cx = start_x - 15 -- Slight nudge when hovered
+        end
+        
+        local cy = start_y + (idx - 1) * card_step - ui_overlay.scroll_y
+        
+        -- Clip elements off screen boundaries
+        if cy > 100 and cy < 660 then
+            local col = card.color
+            
+            -- Glassmorphic Card Backing
+            love.graphics.setColor(0.05, 0.06, 0.1, is_selected and 0.95 or 0.8)
+            love.graphics.rectangle("fill", cx, cy, card_w, card_h, 8)
+            
+            -- Border neon glow matching stage colors
+            local glow_alpha = is_selected and 0.95 or (is_hovered and 0.7 or 0.25)
+            local line_w = is_selected and 2.5 or 1.2
+            
+            love.graphics.setLineWidth(line_w)
+            love.graphics.setColor(col[1], col[2], col[3], glow_alpha)
+            love.graphics.rectangle("line", cx, cy, card_w, card_h, 8)
+            
+            -- Inner fill flash for selected/hovered card
+            if is_selected then
+                love.graphics.setColor(col[1], col[2], col[3], 0.12 + 0.05 * math.sin(time * 12))
+                love.graphics.rectangle("fill", cx, cy, card_w, card_h, 8)
+            elseif is_hovered then
+                love.graphics.setColor(col[1], col[2], col[3], 0.05)
+                love.graphics.rectangle("fill", cx, cy, card_w, card_h, 8)
+            end
+            
+            -- Card Visuals: Mini rotating boss icon on the left of each card!
+            grid_renderer.draw_boss_icon(idx, cx + 45, cy + 37.5, 0.55, time)
+            
+            -- Boss Name
+            love.graphics.setFont(font_body)
+            love.graphics.setColor(1, 1, 1, is_selected and 1.0 or 0.8)
+            love.graphics.print(card.boss_name, cx + 90, cy + 14)
+            
+            -- Song Name
             love.graphics.setFont(font_small)
-            love.graphics.setColor(1, 0.9, 0.2, 0.7 + 0.3 * math.sin(time * 18))
-            love.graphics.printf("-> CLICK TO INTERFACE <-", cx, target_y + 380, card_w, "center")
-        else
+            love.graphics.setColor(0.6, 0.7, 0.8, is_selected and 0.9 or 0.65)
+            love.graphics.print(card.name, cx + 90, cy + 38)
+            
+            -- Difficulty text badge on far right of card
+            local diff_col = (card.difficulty == "HARD") and {0.95, 0.15, 0.15, 0.85} or {0.2, 0.95, 0.35, 0.85}
             love.graphics.setFont(font_small)
-            love.graphics.setColor(1, 1, 1, 0.35)
-            love.graphics.printf(string.format("PRESS [%d] TO INTERFACE", idx), cx, target_y + 380, card_w, "center")
+            love.graphics.setColor(diff_col)
+            local diff_txt_w = font_small:getWidth(card.difficulty)
+            love.graphics.print(card.difficulty, cx + card_w - diff_txt_w - 20, cy + 28)
         end
     end
     
     -- Bottom general information
     love.graphics.setFont(font_small)
-    love.graphics.setColor(1, 1, 1, 0.38)
-    love.graphics.printf("마우스로 카드 선택 또는 키보드 숫자 키 [1] 또는 [2] 눌러 실행", 0, screen_h - 50, screen_w, "center")
+    love.graphics.setColor(1, 1, 1, 0.4)
+    love.graphics.printf("마우스 휠 스크롤 또는 방향키 [▲][▼]로 곡 이동  |  선택된 곡을 한번 더 클릭하거나 [Enter]를 눌러 실행", 0, screen_h - 45, screen_w, "center")
     
     love.graphics.pop()
+end
+
+-- Renders the futuristic main title screen
+function ui_overlay.draw_main_screen()
+    local screen_w, screen_h = 1280, 720
+    local center_x = screen_w / 2
+    local center_y = screen_h / 2
+    local time = love.timer.getTime()
+    
+    local font_title = font_manager.get_font(48)
+    local font_subtitle = font_manager.get_font(20)
+    local font_prompt = font_manager.get_font(16)
+    
+    -- Draw a subtle dark overlay on the bottom part to make text readable
+    love.graphics.setColor(0, 0, 0, 0.45)
+    love.graphics.rectangle("fill", 0, screen_h - 180, screen_w, 180)
+    
+    -- Glowing title banner
+    local title_txt = "SOULROCK"
+    love.graphics.setFont(font_title)
+    
+    -- Glow effect: draw offset versions in magenta and cyan
+    love.graphics.setColor(0.95, 0.15, 0.75, 0.45 + 0.15 * math.sin(time * 10))
+    love.graphics.printf(title_txt, -2, screen_h - 142, screen_w, "center")
+    
+    love.graphics.setColor(0.15, 0.75, 0.9, 0.45 + 0.15 * math.sin(time * 10))
+    love.graphics.printf(title_txt, 2, screen_h - 138, screen_w, "center")
+    
+    -- Main white text
+    love.graphics.setColor(1, 1, 1, 0.95)
+    love.graphics.printf(title_txt, 0, screen_h - 140, screen_w, "center")
+    
+    -- Subtitle
+    local sub_txt = "1인칭 2.5D 리듬 슈팅 액션"
+    love.graphics.setFont(font_subtitle)
+    love.graphics.setColor(0.7, 0.8, 0.9, 0.85)
+    love.graphics.printf(sub_txt, 0, screen_h - 90, screen_w, "center")
+    
+    -- Press key prompt (Pulsing opacity)
+    local prompt_txt = "PRESS ANY KEY OR CLICK TO INTERFACE"
+    love.graphics.setFont(font_prompt)
+    local alpha = 0.45 + 0.45 * math.sin(time * 4)
+    love.graphics.setColor(0.2, 0.95, 0.35, alpha)
+    love.graphics.printf(prompt_txt, 0, screen_h - 50, screen_w, "center")
+    
+    -- Corner tech lines
+    local padding = 30
+    local len = 40
+    love.graphics.setLineWidth(2)
+    love.graphics.setColor(0.15, 0.75, 0.9, 0.6)
+    
+    -- Top-Left
+    love.graphics.line(padding, padding, padding + len, padding)
+    love.graphics.line(padding, padding, padding, padding + len)
+    -- Top-Right
+    love.graphics.line(screen_w - padding, padding, screen_w - padding - len, padding)
+    love.graphics.line(screen_w - padding, padding, screen_w - padding, padding + len)
+    -- Bottom-Left
+    love.graphics.line(padding, screen_h - padding, padding + len, screen_h - padding)
+    love.graphics.line(padding, screen_h - padding, padding, screen_h - padding - len)
+    -- Bottom-Right
+    love.graphics.line(screen_w - padding, screen_h - padding, screen_w - padding - len, screen_h - padding)
+    love.graphics.line(screen_w - padding, screen_h - padding, screen_w - padding, screen_h - padding - len)
 end
 
 return ui_overlay

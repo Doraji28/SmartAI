@@ -51,20 +51,64 @@ local function reset_game()
     sound_synth.music_loop:play()
 end
 
+-- Stage Background Images Cache
+local stage_bgs = {}
+local main_bg_img = nil
+
+local function draw_bg_image(img, opacity)
+    if not img then return end
+    local screen_w, screen_h = 1280, 720
+    local img_w, img_h = img:getDimensions()
+    local scale = math.max(screen_w / img_w, screen_h / img_h)
+    local tx = (screen_w - img_w * scale) / 2
+    local ty = (screen_h - img_h * scale) / 2
+    love.graphics.setColor(1, 1, 1, opacity)
+    love.graphics.draw(img, tx, ty, 0, scale, scale)
+end
+
 function love.load()
     -- Initialize components
     font_manager.init()
     sound_synth.init()
     
-    -- Start in the Stage Selection Menu
-    game_state = "menu"
+    -- Load main screen image
+    local ok, img = pcall(love.graphics.newImage, "Main/Main.png")
+    if ok then
+        main_bg_img = img
+    else
+        print("Failed to load main background: " .. tostring(img))
+    end
+    
+    -- Start in the Main Screen
+    game_state = "main"
+    
+    -- Start playing the first track preview
+    ui_overlay.select_stage(1)
+    
+    -- Load background images
+    for idx, stage in ipairs(beat_manager.stages) do
+        if stage.bg_image_path then
+            local ok, img = pcall(love.graphics.newImage, stage.bg_image_path)
+            if ok then
+                stage_bgs[idx] = img
+            else
+                print("Failed to load background for stage " .. idx .. ": " .. tostring(img))
+            end
+        end
+    end
 end
 
 function love.update(dt)
+    if game_state == "main" then
+        fx_manager.update(dt)
+        return
+    end
+    
     if game_state == "menu" then
         -- Keep grid animations moving in the menu background
         grid_renderer.update(dt)
         fx_manager.update(dt)
+        ui_overlay.update(dt)
         return
     end
     
@@ -85,27 +129,44 @@ function love.update(dt)
     ui_overlay.update(dt)
     
     -- 3. Update active notes
-    local is_mouse_down = love.mouse.isDown(1)
-    local misses = note.update_all(dt, music_time, beat_manager.beat_interval, is_mouse_down)
+    local is_held = love.mouse.isDown(1) or love.keyboard.isDown("z") or love.keyboard.isDown("x")
+    local mx, my = love.mouse.getPosition()
+    local misses, hits = note.update_all(dt, music_time, beat_manager.beat_interval, is_held, mx, my)
     
     if misses > 0 then
         -- Apply damage on missed notes
-        player_hp = math.max(0, player_hp - misses * 8)
+        player_hp = math.max(0, player_hp - misses * 5)
         combo = 0
         fx_manager.trigger_damage()
         sound_synth.play_miss()
+        ui_overlay.trigger_rating("BAD")
+    end
+    
+    for _, hit in ipairs(hits) do
+        -- Register drag hit
+        ui_overlay.trigger_rating(hit.rating)
+        combo = combo + 1
+        if combo > max_combo then max_combo = combo end
+        
+        local base_points = (hit.rating == "PERFECT" and 300 or 100)
+        local mult = math.min(5, math.floor(combo / 10) + 1)
+        score = score + base_points * mult
+        
+        player_hp = math.min(100, player_hp + (hit.rating == "PERFECT" and 4.0 or 2.0))
+        sound_synth.play_cool()
+        fx_manager.spawn_sparks(hit.x, hit.y, beat_manager.track.color)
     end
     
     -- 4. Check for active lasers (holding recovers HP, unblocked drains HP)
     -- Also apply continuous passive HP drain over time (rhythm pressure)
-    player_hp = math.max(0, player_hp - 2.0 * dt)
+    player_hp = math.max(0, player_hp - 1.5 * dt)
     
     for _, n in ipairs(note.active_notes) do
         if n.type == "laser" then
             if n.is_holding then
                 player_hp = math.min(100, player_hp + 6.5 * dt) -- Hold laser to recover
-            elseif n.z <= 0.6 then
-                player_hp = math.max(0, player_hp - 18 * dt) -- Unblocked laser damage
+            elseif beat_manager.current_beat >= n.target_beat then
+                player_hp = math.max(0, player_hp - 10 * dt) -- Unblocked laser damage
                 combo = 0
                 if math.random() > 0.88 then
                     fx_manager.trigger_damage()
@@ -162,6 +223,23 @@ function love.draw()
     -- Clear background (analog dark scan)
     love.graphics.clear(0.04, 0.04, 0.08)
     
+    if game_state == "main" then
+        draw_bg_image(main_bg_img, 1.0)
+        fx_manager.draw_screen_overlays(1280, 720)
+        ui_overlay.draw_main_screen()
+        return
+    end
+    
+    -- Draw stage background image if available
+    local active_bg = nil
+    if game_state == "menu" then
+        active_bg = stage_bgs[ui_overlay.selected_idx]
+        draw_bg_image(active_bg, 0.70) -- 70% opacity in menu for high visibility
+    else
+        active_bg = stage_bgs[beat_manager.active_stage_idx]
+        draw_bg_image(active_bg, 0.55) -- 55% opacity in game for clear visibility
+    end
+    
     -- Apply screen shake and render grid, boss, notes, particles
     love.graphics.push()
     fx_manager.apply_shake()
@@ -201,21 +279,11 @@ function love.draw()
     -- Get current mouse position for aiming
     local mx, my = love.mouse.getPosition()
     
-    -- Render laser beam overlay if active (directs to the stationary laser note)
-    if is_boss_charging then
-        local bx_screen, by_screen = grid_renderer.project(boss_x, boss_y)
-        local lx, ly = mx, my
-        for _, n in ipairs(note.active_notes) do
-            if n.type == "laser" and n.z <= 4.0 then
-                lx, ly = n.screen_x, n.screen_y
-                break
-            end
-        end
-        fx_manager.draw_laser_beam(bx_screen, by_screen, is_laser_held, lx, ly)
-    end
-    
     -- Draw active note crystals and guides
     note.draw_all(love.timer.getTime())
+    
+    -- Draw Cytus scanline overlay
+    note.draw_scanline(love.timer.getTime())
     
     -- Draw spark particles
     fx_manager.draw_particles()
@@ -234,29 +302,101 @@ function love.draw()
     end
 end
 
+local function shoot_at(mx, my)
+    -- Check timing and alignment (pass click coordinates)
+    local music_time = sound_synth.music_loop:tell()
+    local rating, dmg, note_type = note.check_hit(music_time, beat_manager.beat_interval, mx, my)
+    
+    -- Play shot effect
+    sound_synth.play_shoot()
+    
+    if rating then
+        -- Display rating popup (PERFECT, GOOD, BAD)
+        ui_overlay.trigger_rating(rating)
+        combo = combo + 1
+        if combo > max_combo then max_combo = combo end
+        
+        -- Score formatting (combo multiplier * rating score)
+        local mult = math.min(5, math.floor(combo / 10) + 1)
+        local base_points = 50
+        if rating == "PERFECT" then
+            base_points = 300
+        elseif rating == "GOOD" then
+            base_points = 100
+        end
+        score = score + base_points * mult
+        
+        -- Player HP recovery based on rating
+        local hp_gain = 1.0
+        if rating == "PERFECT" then
+            hp_gain = 6.0
+        elseif rating == "GOOD" then
+            hp_gain = 3.0
+        end
+        player_hp = math.min(100, player_hp + hp_gain)
+        
+        -- Apply damage to boss / trigger sparks
+        if note_type == "beat" then
+            -- For beat notes, spawn nice subtle sparks at click point without screen shake
+            local color = (rating == "PERFECT") and {1.0, 0.9, 0.4} or {0.4, 0.9, 1.0}
+            fx_manager.spawn_sparks(mx, my, color)
+        else
+            -- Boss target hits trigger screen shake and boss shield/HP damage
+            if beat_manager.is_groggy_phase() and boss_shield > 0 then
+                local shield_dmg = 5
+                local shake_intensity = 3.0
+                if rating == "PERFECT" then
+                    shield_dmg = 20
+                    shake_intensity = 8.0
+                elseif rating == "GOOD" then
+                    shield_dmg = 10
+                    shake_intensity = 5.0
+                end
+                boss_shield = math.max(0, boss_shield - shield_dmg)
+                fx_manager.spawn_sparks(mx, my, {0.2, 0.85, 0.95})
+                fx_manager.trigger_shake(shake_intensity, 0.15)
+                
+                if boss_shield <= 0 then
+                    is_groggy = true
+                    sound_synth.play_perfect()
+                    fx_manager.trigger_shake(16.0, 0.35)
+                end
+            else
+                -- Normal phase or groggy phase (shield already broken)
+                local color = (rating == "PERFECT") and {1.0, 0.85, 0.1} or {0.2, 0.85, 0.95}
+                fx_manager.spawn_sparks(mx, my, color)
+                fx_manager.trigger_shake((rating == "PERFECT") and 10.0 or 5.0, 0.16)
+            end
+        end
+    end
+end
+
 function love.mousepressed(x, y, button)
     if button ~= 1 then return end
     
+    if game_state == "main" then
+        game_state = "menu"
+        sound_synth.play_cool()
+        return
+    end
+    
     if game_state == "menu" then
-        -- Stage Select Click Detection
-        local card_w = 360
-        local card_h = 420
-        local start_x = 240
-        local start_y = 180
-        local spacing = 80
-        local clicked_idx = nil
-        for idx = 1, 2 do
-            local cx = start_x + (idx - 1) * (card_w + spacing)
-            local cy = start_y
-            if x >= cx and x <= cx + card_w and y >= cy and y <= cy + card_h then
-                clicked_idx = idx
-                break
+        local hovered = ui_overlay.get_hovered_card(x, y)
+        if hovered then
+            if hovered == "play" then
+                beat_manager.select_stage(ui_overlay.selected_idx)
+                sound_synth.select_track(ui_overlay.selected_idx)
+                reset_game()
+            elseif type(hovered) == "number" then
+                if hovered == ui_overlay.selected_idx then
+                    -- Double-click to start
+                    beat_manager.select_stage(hovered)
+                    sound_synth.select_track(hovered)
+                    reset_game()
+                else
+                    ui_overlay.select_stage(hovered)
+                end
             end
-        end
-        if clicked_idx then
-            beat_manager.select_stage(clicked_idx)
-            sound_synth.select_track(clicked_idx)
-            reset_game()
         end
         return
     end
@@ -272,96 +412,29 @@ function love.mousepressed(x, y, button)
         return
     end
     
-    -- Play shot effect
-    sound_synth.play_shoot()
-    
-    -- Check timing and alignment (pass x, y click coordinates)
-    local music_time = sound_synth.music_loop:tell()
-    local rating, dmg, note_type = note.check_hit(music_time, beat_manager.beat_interval, x, y)
-    
-    if rating then
-        -- Display rating popup
-        ui_overlay.trigger_rating(rating)
-        combo = combo + 1
-        if combo > max_combo then max_combo = combo end
-        
-        -- Score formatting
-        local mult = math.min(5, math.floor(combo / 10) + 1)
-        local base_points = (rating == "PERFECT" and 100 or 50)
-        score = score + base_points * mult
-        
-        -- Player HP recovery on successful hits (beat notes give less HP)
-        if note_type == "beat" then
-            if rating == "PERFECT" then
-                player_hp = math.min(100, player_hp + 2.0)
-            elseif rating == "COOL" then
-                player_hp = math.min(100, player_hp + 1.0)
-            end
-        else
-            if rating == "PERFECT" then
-                player_hp = math.min(100, player_hp + 8.0)
-            elseif rating == "COOL" then
-                player_hp = math.min(100, player_hp + 4.0)
-            end
-        end
-        
-        -- Apply damage to boss / trigger sparks
-        if note_type == "beat" then
-            -- For beat notes, spawn nice subtle sparks at click point without screen shake
-            local color = (rating == "PERFECT") and {1.0, 0.9, 0.4} or {0.4, 0.9, 1.0}
-            fx_manager.spawn_sparks(x, y, color)
-        else
-            -- Boss target hits trigger massive screen shake and boss shield/HP damage
-            if beat_manager.is_groggy_phase() and boss_shield > 0 then
-                if rating == "PERFECT" then
-                    boss_shield = math.max(0, boss_shield - 20)
-                    fx_manager.spawn_sparks(x, y, {0.2, 0.85, 0.95}) -- Cyan sparks at click point
-                    fx_manager.trigger_shake(8.0, 0.15)
-                elseif rating == "COOL" then
-                    boss_shield = math.max(0, boss_shield - 10)
-                    fx_manager.spawn_sparks(x, y, {0.2, 0.85, 0.95})
-                    fx_manager.trigger_shake(5.0, 0.12)
-                end
-                
-                if boss_shield <= 0 then
-                    is_groggy = true
-                    sound_synth.play_perfect()
-                    fx_manager.trigger_shake(16.0, 0.35)
-                end
-            else
-                -- Normal phase or groggy phase (shield already broken)
-                local color = (rating == "PERFECT") and {1.0, 0.85, 0.1} or {0.2, 0.85, 0.95}
-                fx_manager.spawn_sparks(x, y, color)
-                fx_manager.trigger_shake((rating == "PERFECT") and 10.0 or 5.0, 0.16)
-            end
-        end
-    else
-        -- Shoot miss / off-beat trigger / off-target trigger -> Trigger Gun Overheat
-        combo = 0
-        gun_heat = 1.0
-        is_overheated = true
-        overheat_timer = 0.5 -- 0.5s shoot lock
-        ui_overlay.trigger_rating("MISS")
-        sound_synth.play_overheat()
-        fx_manager.trigger_glitch()
-        
-        -- Penalty damage on missed/off-beat shots
-        player_hp = math.max(0, player_hp - 5.0)
-    end
+    shoot_at(x, y)
 end
 
 function love.keypressed(key)
     if key == "escape" then
         love.event.quit()
+    elseif game_state == "main" then
+        game_state = "menu"
+        sound_synth.play_cool()
+        return
     elseif game_state == "menu" then
-        if key == "1" or key == "kp1" then
-            beat_manager.select_stage(1)
-            sound_synth.select_track(1)
+        if key == "up" then
+            ui_overlay.select_prev()
+        elseif key == "down" then
+            ui_overlay.select_next()
+        elseif key == "return" or key == "kpenter" or key == "space" then
+            beat_manager.select_stage(ui_overlay.selected_idx)
+            sound_synth.select_track(ui_overlay.selected_idx)
             reset_game()
-        elseif key == "2" or key == "kp2" then
-            beat_manager.select_stage(2)
-            sound_synth.select_track(2)
-            reset_game()
+        elseif key >= "1" and key <= "7" then
+            ui_overlay.select_stage(tonumber(key))
+        elseif key >= "kp1" and key <= "kp7" then
+            ui_overlay.select_stage(tonumber(key:sub(3)))
         end
     else
         -- Playing or result screen
@@ -370,6 +443,24 @@ function love.keypressed(key)
         elseif key == "m" then
             game_state = "menu"
             sound_synth.music_loop:stop()
+            -- Play preview music for selected track
+            sound_synth.select_track(ui_overlay.selected_idx)
+            sound_synth.music_loop:seek(0)
+            sound_synth.music_loop:play()
+        elseif (key == "z" or key == "x") and game_state == "playing" then
+            -- Shoot locking on overheat
+            if is_overheated then
+                sound_synth.play_overheat()
+                return
+            end
+            local mx, my = love.mouse.getPosition()
+            shoot_at(mx, my)
         end
+    end
+end
+
+function love.wheelmoved(x, y)
+    if game_state == "menu" then
+        ui_overlay.scroll_menu(y)
     end
 end

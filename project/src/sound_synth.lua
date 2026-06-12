@@ -278,10 +278,18 @@ function sound_synth.init()
     sound_synth.music_tracks = {}
     sound_synth.music_tracks[1] = love.audio.newSource("Music/Boss1/Chorus – Female Vocal (English) 🔥 KILLI.mp3", "stream")
     sound_synth.music_tracks[2] = love.audio.newSource("Music/Boss2/Second Run (Dreaming in the Ether).mp3", "stream")
+    sound_synth.music_tracks[3] = love.audio.newSource("Music/Boss3/Dreamsteps Through the Glade.mp3", "stream")
+    sound_synth.music_tracks[4] = love.audio.newSource("Music/Boss4/Second Run (Ethereal Memories).mp3", "stream")
+    sound_synth.music_tracks[5] = love.audio.newSource("Music/Boss5/테일즈위버 OST - Second Run - yeon H (128k).mp3", "stream")
+    sound_synth.music_tracks[6] = love.audio.newSource("Music/Boss6/Shadows creeping on the floor,.mp3", "stream")
+    sound_synth.music_tracks[7] = love.audio.newSource("Music/Boss7/멈추지 않아 비상.mp3", "stream")
     
     -- Rhythm tracks do not loop automatically; they end, leading to victory
-    sound_synth.music_tracks[1]:setLooping(false)
-    sound_synth.music_tracks[2]:setLooping(false)
+    for idx = 1, 7 do
+        if sound_synth.music_tracks[idx] then
+            sound_synth.music_tracks[idx]:setLooping(false)
+        end
+    end
     
     -- Set default active source
     sound_synth.music_loop = sound_synth.music_tracks[1]
